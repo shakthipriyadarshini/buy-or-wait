@@ -1,0 +1,50 @@
+# --- secrets: never commit these ---
+.env
+.env.local
+*.key
+*.pem
+
+# --- python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+
+# --- node / frontend ---
+node_modules/
+frontend/dist/
+npm-debug.log*
+yarn-error.log*
+.vite/
+
+# --- generated output ---
+# output.csv IS committed (it's a deliverable) — see README.
+# Scratch/interim runs are not:
+/tmp_output*.csv
+code/evaluation/usage_report.md
+
+# --- LLM response cache ---
+# NOT committed. It's a generated artifact, and it's stored as a single
+# ~139KB JSON line — git diffs line-by-line, so every change would rewrite
+# the whole blob, producing unreadable diffs and a fresh 139KB object in
+# history on every commit.
+#
+# The app does not need it: engine/explain.py falls back to
+# deterministic_explanation(), so decision_explanation is always sensible
+# prose with no key, no quota and no cache. The cache only speeds up repeat
+# runs and avoids re-spending quota.
+#
+# Note: message/image extraction signals DO shift a few borderline
+# decisions, so exactly reproducing the metrics in README.md needs either a
+# GEMINI_API_KEY or a copy of this cache. See "Reproducing the results".
+code/.llm_cache.json
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

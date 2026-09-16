@@ -1,0 +1,16 @@
+# Kept at the repo root so hosting platforms (Render, Railway, Fly, Heroku)
+# auto-detect this as a Python app. code/requirements.txt mirrors this for
+# anyone installing from inside code/.
+
+flask>=3.0
+gunicorn>=21.2          # production WSGI server; Flask's dev server is not one
+python-dotenv>=1.0      # loads .env locally; hosts inject real env vars instead
+
+# Optional — only needed for live LLM calls. Without it (or without
+# GEMINI_API_KEY), explanations come from a deterministic template and
+# extraction is a no-op; the app still runs fully end to end.
+google-genai>=1.0
+
+# Used for validated structured output from the model when available;
+# engine/extract.py falls back to a stdlib validator if it's missing.
+pydantic>=2.0
