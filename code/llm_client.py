@@ -74,6 +74,23 @@ _client = None
 # usage report can log the real provider/model instead of a hardcoded guess.
 LAST_CALL_SOURCE = "mock"
 
+# When True, call_llm/call_vlm serve cache hits but NEVER make a live
+# request — they fall straight through to the offline fallback instead.
+#
+# This exists because api.py preprocesses the whole dataset at startup (215
+# messages + 16 images = 231 potential calls). At the default 5 req/min
+# free-tier throttle that is ~46 minutes of a deployed server refusing
+# traffic before it ever binds. A web process must start fast and
+# deterministically; paying live-LLM latency during boot is the wrong place
+# for it. Batch runs (main.py) leave this False and do pay that cost, which
+# is what populates the cache in the first place.
+OFFLINE_ONLY = os.environ.get("LLM_OFFLINE_ONLY", "").lower() in ("1", "true", "yes")
+
+
+def set_offline_only(value: bool) -> None:
+    global OFFLINE_ONLY
+    OFFLINE_ONLY = value
+
 # Latched True the first time a call exhausts all its retries still hitting a
 # 429 — from then on we assume the DAILY quota is gone (not just the current
 # minute's window, which would have healed) and skip the network entirely for
@@ -164,7 +181,14 @@ def _mock_signal_response() -> tuple[str, int, int]:
 
 
 def _mock_image_response(event_id: str) -> tuple[str, int, int]:
-    return f'{{"event_id": "{event_id}", "amount": 1.0, "confidence": 0.0}}', 0, 0
+    """Signals UNRESOLVED (amount 0, confidence 0) rather than inventing a
+    number. An earlier version returned amount=1.0 as a schema-satisfying
+    placeholder — which meant a receipt whose amount could not be read was
+    silently treated as a real 1-unit transaction and fed into the forecast
+    as fact. Callers must check confidence and exclude unresolved events
+    rather than trusting the amount. Fabricating a financial figure to
+    satisfy a validator is strictly worse than admitting the gap."""
+    return f'{{"event_id": "{event_id}", "amount": 0.0, "confidence": 0.0}}', 0, 0
 
 
 def _usage(resp) -> tuple[int, int]:
@@ -188,7 +212,7 @@ def call_llm(system: str, user: str) -> tuple[str, int, int]:
         LAST_CALL_SOURCE = "cached"
         return hit["raw"], hit["in_tok"], hit["out_tok"]
 
-    if "GEMINI_API_KEY" not in os.environ or _quota_exhausted:
+    if "GEMINI_API_KEY" not in os.environ or _quota_exhausted or OFFLINE_ONLY:
         LAST_CALL_SOURCE = "mock"
         return _mock_signal_response()
 
@@ -245,7 +269,7 @@ def call_vlm(system: str, image_path: str, event_id: str) -> tuple[str, int, int
         LAST_CALL_SOURCE = "cached"
         return hit["raw"], hit["in_tok"], hit["out_tok"]
 
-    if "GEMINI_API_KEY" not in os.environ or _quota_exhausted:
+    if "GEMINI_API_KEY" not in os.environ or _quota_exhausted or OFFLINE_ONLY:
         LAST_CALL_SOURCE = "mock"
         return _mock_image_response(event_id)
 

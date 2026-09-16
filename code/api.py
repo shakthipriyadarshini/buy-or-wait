@@ -54,11 +54,21 @@ app = Flask(__name__, static_folder=None)
 # frontend URL in production rather than leaving it open.
 CORS_ORIGINS = os.environ.get("CORS_ORIGINS", "*")
 
+# Upper bound on an ad-hoc requested_amount, to reject absurd input early.
+MAX_REQUEST_AMOUNT = float(os.environ.get("MAX_REQUEST_AMOUNT", "1e12"))
+
 # populated once in load_dataset(), read by every request handler
 STATE = {}
 
 
 def load_dataset(dataset_dir: Path):
+    # A web process must bind fast. Preprocessing makes up to 231 extraction
+    # calls (215 messages + 16 receipt images); at the free tier's 5 req/min
+    # that is ~46 minutes of a deployed server not serving traffic. So the
+    # API serves cache hits but never makes live calls during boot. Populate
+    # the cache with a batch run (`python code/main.py`) before deploying if
+    # you want extraction signals applied here.
+    engine.llm_client.set_offline_only(True)
     """Mirrors the loading section of main.run() up through
     events_by_user/options_by_request, without the per-request loop —
     that loop is what api.py replaces with HTTP handlers."""
@@ -119,7 +129,14 @@ def load_dataset(dataset_dir: Path):
             if img:
                 img_path = dataset_dir / "media" / "images" / f"{img['image_id']}.png"
                 extraction = engine.extract_image_amount(str(img_path), ev.event_id, engine.llm_client.call_vlm)
-                ev.amount = extraction.amount
+                if extraction.confidence > 0 and extraction.amount > 0:
+                    ev.amount = extraction.amount
+                else:
+                    # Receipt amount could not be read (no vision model
+                    # available, or the model wasn't confident). Mark the
+                    # event unusable rather than letting a placeholder
+                    # amount enter the 90-day forecast as if it were fact.
+                    ev.status = "unresolved"
         events.append(ev)
 
     for ev in events:
@@ -235,6 +252,39 @@ def list_requests():
     ])
 
 
+def _parse_plan_payments(plan_str: str):
+    """"2026-09-16:500|2026-10-16:500" -> [(date, 500.0), ...]"""
+    if not plan_str or plan_str == "none":
+        return []
+    out = []
+    for chunk in plan_str.split("|"):
+        try:
+            d, amt = chunk.split(":")
+            out.append((engine.parse_date(d), float(amt)))
+        except (ValueError, TypeError):
+            continue
+    return out
+
+
+def _forecast_series(prof, user_events, request_date, payments=None, max_points=90) -> list[dict]:
+    """The real day-by-day 90-day balance walk the engine already computes
+    internally — previously it never left the backend, so the UI charted
+    placeholder data. `payments` layers a candidate plan on top, which is
+    what makes a with-purchase vs without-purchase comparison possible."""
+    from engine.recurrence import detect_and_project
+    from engine.forecast import daily_deltas, simulate_balance, HORIZON_DAYS
+
+    sims = detect_and_project(user_events, request_date, HORIZON_DAYS)
+    deltas = daily_deltas(sims, request_date, HORIZON_DAYS)
+    balances = simulate_balance(prof.current_available_balance, deltas,
+                                 request_date, HORIZON_DAYS, extra_payments=payments)
+    ordered = sorted(balances.items())
+    # Down-sample evenly if a caller wants fewer points; charts don't need 91.
+    step = max(1, len(ordered) // max_points)
+    return [{"date": d.isoformat(), "balance": round(b, 2)}
+            for i, (d, b) in enumerate(ordered) if i % step == 0 or i == len(ordered) - 1]
+
+
 def _profile_snapshot(prof) -> dict:
     return {
         "user_id": prof.user_id,
@@ -267,34 +317,78 @@ def get_decision(request_id: str):
     user_events = STATE["events_by_user"].get(req.user_id, [])
     options = STATE["options_by_request"].get(req.request_id, [])
     decision = engine.evaluate_one(prof, req, user_events, options)
-    return jsonify({**asdict(decision), "profile": _profile_snapshot(prof)})
+    plan_payments = _parse_plan_payments(decision.payment_plan)
+    return jsonify({
+        **asdict(decision),
+        "profile": _profile_snapshot(prof),
+        "forecast_without_purchase": _forecast_series(prof, user_events, req.request_date),
+        "forecast_with_purchase": _forecast_series(prof, user_events, req.request_date, payments=plan_payments),
+    })
 
 
 @app.route("/api/requests/evaluate", methods=["POST", "OPTIONS"])
 def evaluate_adhoc():
     if flask_request.method == "OPTIONS":
         return "", 204
-    body = flask_request.get_json(force=True)
+    try:
+        body = flask_request.get_json(force=True)
+    except Exception:
+        return jsonify(error="request body must be valid JSON"), 400
+    if not isinstance(body, dict):
+        return jsonify(error="request body must be a JSON object"), 400
+
     required = ["user_id", "requested_amount", "request_date", "desired_completion_date"]
     missing = [f for f in required if f not in body]
     if missing:
-        return jsonify(error=f"missing fields: {missing}"), 400
+        return jsonify(error=f"missing required fields: {', '.join(missing)}"), 400
     if body["user_id"] not in STATE["profiles"]:
         return jsonify(error=f"unknown user_id: {body['user_id']}"), 404
 
+    # Validate every user-supplied value explicitly. Previously these were
+    # fed straight into float()/parse_date(), so a non-numeric amount or a
+    # malformed date surfaced as a 500 rather than a usable error message.
+    try:
+        amount = float(body["requested_amount"])
+    except (TypeError, ValueError):
+        return jsonify(error="requested_amount must be a number"), 400
+    if not (amount > 0):
+        return jsonify(error="requested_amount must be greater than 0"), 400
+    if amount > MAX_REQUEST_AMOUNT:
+        return jsonify(error=f"requested_amount exceeds the maximum of {MAX_REQUEST_AMOUNT:,.0f}"), 400
+
+    try:
+        req_date = engine.parse_date(body["request_date"])
+        done_date = engine.parse_date(body["desired_completion_date"])
+    except (TypeError, ValueError):
+        return jsonify(error="dates must be in YYYY-MM-DD format"), 400
+    if req_date is None or done_date is None:
+        return jsonify(error="request_date and desired_completion_date are required"), 400
+    if done_date < req_date:
+        return jsonify(error="desired_completion_date must be on or after request_date"), 400
+
+    allows_partial = body.get("allows_partial_payment", False)
+    if not isinstance(allows_partial, bool):
+        return jsonify(error="allows_partial_payment must be true or false"), 400
+
     req = Request(
         request_id=body.get("request_id", "adhoc"), user_id=body["user_id"],
-        request_date=engine.parse_date(body["request_date"]),
-        request_type=body.get("request_type", "purchase"),
-        requested_amount=float(body["requested_amount"]),
-        desired_completion_date=engine.parse_date(body["desired_completion_date"]),
-        allows_partial_payment=bool(body.get("allows_partial_payment", False)),
-        request_text=body.get("request_text", ""),
+        request_date=req_date,
+        request_type=str(body.get("request_type", "purchase"))[:64],
+        requested_amount=amount,
+        desired_completion_date=done_date,
+        allows_partial_payment=allows_partial,
+        request_text=str(body.get("request_text", ""))[:1000],
     )
     prof = STATE["profiles"][req.user_id]
     user_events = STATE["events_by_user"].get(req.user_id, [])
     decision = engine.evaluate_one(prof, req, user_events, options=[])
-    return jsonify({**asdict(decision), "profile": _profile_snapshot(prof)})
+    plan_payments = _parse_plan_payments(decision.payment_plan)
+    return jsonify({
+        **asdict(decision),
+        "profile": _profile_snapshot(prof),
+        "forecast_without_purchase": _forecast_series(prof, user_events, req.request_date),
+        "forecast_with_purchase": _forecast_series(prof, user_events, req.request_date, payments=plan_payments),
+    })
 
 
 def _default_dataset_dir() -> Path:

@@ -44,7 +44,10 @@ if HAVE_PYDANTIC:
 
     class ImageAmountExtraction(BaseModel):
         event_id: str
-        amount: float = Field(gt=0)
+        # ge=0, not gt=0: 0.0 with confidence 0.0 is the explicit
+        # "could not resolve this receipt" signal. Requiring >0 here is what
+        # forced the old mock to invent a placeholder amount.
+        amount: float = Field(ge=0)
         confidence: float = Field(ge=0.0, le=1.0)
 
     def _validate_message_signal(raw: str) -> "MessageSignal":
@@ -87,8 +90,8 @@ else:
     def _validate_image_extraction(raw: str) -> "ImageAmountExtraction":
         d = json.loads(raw)
         amount = float(d["amount"])
-        if amount <= 0:
-            raise ValueError("amount must be > 0")
+        if amount < 0:
+            raise ValueError("amount must be >= 0")
         conf = float(d.get("confidence", 0.0))
         return ImageAmountExtraction(event_id=d["event_id"], amount=amount, confidence=conf)
 

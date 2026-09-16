@@ -32,18 +32,6 @@ import "./App.css";
 // split-deployment case (frontend and API on different hosts).
 const API_BASE = import.meta.env.VITE_API_BASE ?? "";
 
-// Illustrative only — the backend computes the real 90-day balance walk
-// internally (engine/forecast.py) but doesn't expose the day-by-day series
-// over the API yet, so this chart stays sample data until that's added.
-const sampleForecastData = [
-  { date: "Day 0", balance: 100 },
-  { date: "Day 15", balance: 88 },
-  { date: "Day 30", balance: 96 },
-  { date: "Day 45", balance: 78 },
-  { date: "Day 60", balance: 84 },
-  { date: "Day 75", balance: 90 },
-  { date: "Day 90", balance: 82 },
-];
 
 const STATUS_META = {
   affordable_now: { label: "AFFORDABLE NOW", icon: CheckCircle2, tone: "good" },
@@ -138,6 +126,18 @@ function App() {
   const statusMeta = decision ? STATUS_META[decision.affordability_status] : null;
   const StatusIcon = statusMeta?.icon || CheckCircle2;
   const paymentRows = decision ? parsePaymentPlan(decision.payment_plan) : [];
+
+  // Real 90-day balance walk from the backend, zipped into one series per
+  // date so the chart can show with-purchase against without-purchase.
+  const forecastData = (() => {
+    const without = decision?.forecast_without_purchase ?? [];
+    const withBuy = decision?.forecast_with_purchase ?? [];
+    return without.map((pt, i) => ({
+      date: pt.date,
+      without: pt.balance,
+      with: withBuy[i]?.balance ?? null,
+    }));
+  })();
   const spendingChanges =
     decision && decision.spending_changes_needed !== "none"
       ? decision.spending_changes_needed.split("|")
@@ -369,26 +369,33 @@ function App() {
 
                 <div className="legend">
                   <span className="legend-dot" />
-                  Sample shape — not this request's real forecast yet
+                  Projected balance, with and without this purchase
                 </div>
               </div>
 
               <div className="chart">
                 <ResponsiveContainer width="100%" height={300}>
-                  <AreaChart data={sampleForecastData}>
+                  <AreaChart data={forecastData}>
                     <defs>
                       <linearGradient id="balanceGradient" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopOpacity={0.25} />
-                        <stop offset="100%" stopOpacity={0} />
+                        <stop offset="0%" stopColor="#7ba05b" stopOpacity={0.25} />
+                        <stop offset="100%" stopColor="#7ba05b" stopOpacity={0} />
                       </linearGradient>
                     </defs>
 
                     <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                    <XAxis dataKey="date" axisLine={false} tickLine={false} />
-                    <YAxis axisLine={false} tickLine={false} width={55} />
-                    <Tooltip />
-                    <ReferenceLine y={100} strokeDasharray="5 5" label="Minimum balance" />
-                    <Area type="monotone" dataKey="balance" strokeWidth={3} fill="url(#balanceGradient)" />
+                    <XAxis dataKey="date" axisLine={false} tickLine={false} minTickGap={40} />
+                    <YAxis axisLine={false} tickLine={false} width={70}
+                           tickFormatter={(v) => Intl.NumberFormat("en", { notation: "compact" }).format(v)} />
+                    <Tooltip formatter={(v) => formatCurrency(v, currency)} />
+                    <ReferenceLine
+                      y={currentUser?.minimum_balance_to_keep}
+                      stroke="#b3402a" strokeDasharray="5 5"
+                      label={{ value: "Minimum balance", position: "insideTopRight", fontSize: 11 }} />
+                    <Area type="monotone" dataKey="without" name="Without purchase"
+                          stroke="#7ba05b" strokeWidth={2} fill="url(#balanceGradient)" />
+                    <Area type="monotone" dataKey="with" name="With this purchase"
+                          stroke="#b3402a" strokeWidth={2} fill="none" />
                   </AreaChart>
                 </ResponsiveContainer>
               </div>

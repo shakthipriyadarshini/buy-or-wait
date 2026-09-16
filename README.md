@@ -256,6 +256,27 @@ committing the cache, and the honest trade for keeping the repo clean.
 
 ---
 
+## Deployment behaviour worth knowing
+
+**The API never makes live LLM calls at startup.** Preprocessing the dataset
+involves up to 231 extraction calls (215 messages + 16 receipt images); at
+the free tier's 5 req/min that would be ~46 minutes of a deployed server
+refusing traffic before it binds. `api.py` therefore sets
+`llm_client.set_offline_only(True)` — it serves cache hits but never blocks
+on the network. Measured cold start: **under 1 second**.
+
+To have extraction signals applied in the deployed app, run the batch
+pipeline once with a key (`python code/main.py`) to populate
+`code/.llm_cache.json` before building the image.
+
+**Unresolvable receipts are excluded, not guessed.** If a receipt image
+can't be read (no vision model, or low confidence), the event is marked
+`unresolved` and dropped from the forecast. An earlier version returned a
+placeholder amount of `1.0` to satisfy the schema validator — which meant an
+unreadable receipt silently entered the forecast as a real 1-unit
+transaction. Fabricating a financial figure to satisfy a validator is worse
+than admitting the gap.
+
 ## Known limitations
 
 - `recommended_payment_method` regressed slightly on the sample set (see
@@ -263,9 +284,16 @@ committing the cache, and the honest trade for keeping the repo clean.
   `request_19`) haven't been traced yet.
 - `request_05`, `request_08`, `request_13` were wrong before the recurrence
   work too, and remain unexplained.
-- The 90-day forecast chart in the UI shows sample data — the engine
-  computes the real day-by-day series but doesn't yet expose it over the
-  API. It's labeled as such in the UI rather than silently faked.
+- **No authentication or rate limiting.** Anyone who can reach the deployed
+  URL can call `/api/requests/evaluate`. Fine for a demo; add both before
+  treating it as a real service.
+- **`/api/users` exposes every profile in the dataset.** This is synthetic
+  HackerRank data that also ships in `dataset/`, so it leaks nothing real —
+  but a polished demo would expose 2–3 curated profiles rather than all 275.
+- **The frontend uses today's real date** for ad-hoc requests, while the
+  dataset's events run to ~Sept 2026. Decisions therefore shift depending on
+  when you open the page. A fixed snapshot date would make the demo
+  deterministic.
 - No unit tests yet. Both bugs above would have been caught instantly by
   tests over `recurrence.py` and `forecast.py`, which are pure functions.
 - `max_installment_months` is enforced with a coarse span check.

@@ -95,8 +95,9 @@ def _signed(ev: FinancialEvent) -> float:
 def _usable(ev: FinancialEvent) -> bool:
     if ev.direction == "non_cash":
         return False
-    if ev.status in ("cancelled", "failed", "unrealized"):
-        return False
+    if ev.status in ("cancelled", "failed", "unrealized", "unresolved"):
+        return False  # "unresolved" = a receipt whose amount could not be
+                      # read; excluded rather than modelled at a guessed value
     if ev.superseded:
         return False
     if ev.status == "pending" and ev.direction == "credit":

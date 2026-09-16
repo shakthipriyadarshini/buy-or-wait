@@ -136,7 +136,14 @@ def run(dataset_dir: Path, out_path: Path, requests_file: str = "requests.csv"):
             if img:
                 img_path = dataset_dir / "media" / "images" / f"{img['image_id']}.png"
                 extraction = extract_image_amount(str(img_path), ev.event_id, llm_client.call_vlm)
-                ev.amount = extraction.amount
+                if extraction.confidence > 0 and extraction.amount > 0:
+                    ev.amount = extraction.amount
+                else:
+                    # Receipt amount could not be read (no vision model
+                    # available, or the model wasn't confident). Mark the
+                    # event unusable rather than letting a placeholder
+                    # amount enter the 90-day forecast as if it were fact.
+                    ev.status = "unresolved"
         events.append(ev)
 
     # currency-normalize every event into the owning user's home_currency
