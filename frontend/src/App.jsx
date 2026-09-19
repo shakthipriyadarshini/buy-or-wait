@@ -40,6 +40,19 @@ const STATUS_META = {
   not_affordable: { label: "NOT AFFORDABLE", icon: AlertTriangle, tone: "bad" },
 };
 
+// Not a backend status — the backend's affordability_status stays
+// "not_affordable" (that's the benchmark-facing value). This is a
+// frontend-only display state for the specific case where the requested
+// amount is already financially safe to pay today, but none of the user's
+// configured payment methods produced an eligible plan. Conflating that
+// with a genuinely unaffordable purchase is exactly the misleading UI this
+// fixes, so it gets its own label/tone instead of reusing NOT_AFFORDABLE's.
+const SAFE_NO_METHOD_META = {
+  label: "SAFE TODAY — NO ELIGIBLE PAYMENT METHOD",
+  icon: ShieldCheck,
+  tone: "warn",
+};
+
 function formatCurrency(value, currency) {
   try {
     return new Intl.NumberFormat("en-IN", {
@@ -113,7 +126,7 @@ function App() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Request failed");
-      setDecision(data);
+      setDecision({ ...data, _requestedAmount: requestedAmount });
     } catch (e) {
       setError(e.message);
       setDecision(null);
@@ -123,7 +136,26 @@ function App() {
   }
 
   const currency = decision?.profile?.home_currency || currentUser?.home_currency || "USD";
-  const statusMeta = decision ? STATUS_META[decision.affordability_status] : null;
+
+  // Same condition the engine itself relies on (amount_safe_to_pay reaches
+  // requested_amount exactly when the full amount is already safe to pay):
+  // if that holds yet the status still came back not_affordable, the reason
+  // is payment-method eligibility, not insufficient funds.
+  // Compared in whole cents (2 decimal places) — the same precision the
+  // backend itself rounds amount_safe_to_pay to — rather than an arbitrary
+  // epsilon, so this can't drift from the backend's own rounding.
+  const toCents = (v) => Math.round(v * 100);
+  const isSafeNoEligibleMethod =
+    !!decision &&
+    decision.affordability_status === "not_affordable" &&
+    decision._requestedAmount > 0 &&
+    toCents(decision.amount_safe_to_pay) >= toCents(decision._requestedAmount);
+
+  const statusMeta = decision
+    ? isSafeNoEligibleMethod
+      ? SAFE_NO_METHOD_META
+      : STATUS_META[decision.affordability_status]
+    : null;
   const StatusIcon = statusMeta?.icon || CheckCircle2;
   const paymentRows = decision ? parsePaymentPlan(decision.payment_plan) : [];
 
@@ -324,7 +356,9 @@ function App() {
                   <span className="status-label">{statusMeta?.label}</span>
 
                   <h2>
-                    {decision.affordability_status === "not_affordable"
+                    {isSafeNoEligibleMethod
+                      ? `You can afford ${item || "this"} today, but no eligible payment method is available.`
+                      : decision.affordability_status === "not_affordable"
                       ? `You shouldn't buy ${item || "this"} right now`
                       : decision.affordability_status === "affordable_later"
                       ? `Wait to buy ${item || "this"}`
@@ -344,12 +378,14 @@ function App() {
                 <div>
                   <span>Recommended method</span>
                   <strong className="method">
-                    {decision.recommended_payment_method.replace("_", " ")}
+                    {decision.recommended_payment_method === "not_recommended"
+                      ? "No eligible payment method"
+                      : decision.recommended_payment_method.replace("_", " ")}
                   </strong>
                 </div>
 
                 <div>
-                  <span>Full payment possible</span>
+                  <span>Full payment safe from</span>
                   <strong>{decision.earliest_date_for_full_payment || "Not within 90 days"}</strong>
                 </div>
               </div>

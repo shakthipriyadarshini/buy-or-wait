@@ -76,7 +76,8 @@ def evaluate_one(prof: Profile, req: Request, user_events: list[FinancialEvent],
 
     facts = {"currency": prof.home_currency, "current_available_balance": prof.current_available_balance,
              "minimum_balance_to_keep": prof.minimum_balance_to_keep,
-             "safe_today": safe_today, "earliest_full": str(earliest_full)}
+             "safe_today": safe_today, "earliest_full": str(earliest_full),
+             "requested_amount": req.requested_amount}
     decision_stub = build_decision_row(req.request_id, safe_today, best, earliest_full, req.request_date, "")
     explanation = generate_explanation(decision_stub, facts, call_llm)
     return build_decision_row(req.request_id, safe_today, best, earliest_full, req.request_date, explanation)

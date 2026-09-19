@@ -245,18 +245,32 @@ nav {
 }
 
 .amount-wrapper {
-  position: relative;
+  display: flex;
+  align-items: center;
+  border: 1px solid #dce4df;
+  background: #fafcfb;
+  border-radius: 9px;
+  padding: 0 14px;
+}
+
+.amount-wrapper:focus-within {
+  border-color: #82958b;
 }
 
 .amount-wrapper span {
-  position: absolute;
-  left: 14px;
-  top: 13px;
+  flex: 0 0 auto;
+  padding-right: 8px;
   color: #68766f;
+  white-space: nowrap;
 }
 
 .amount-wrapper input {
-  padding-left: 30px;
+  flex: 1 1 auto;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  padding: 13px 0;
+  outline: none;
 }
 
 .check-button {

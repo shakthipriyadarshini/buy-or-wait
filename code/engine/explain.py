@@ -28,6 +28,19 @@ def deterministic_explanation(decision: Decision, facts: dict) -> str:
     safe = decision.amount_safe_to_pay
     minimum = facts.get("minimum_balance_to_keep")
     earliest = decision.earliest_date_for_full_payment
+    requested = facts.get("requested_amount")
+
+    # A request can land on "not_affordable" for two different reasons:
+    #   (a) the balance genuinely can't support it within 90 days, or
+    #   (b) the full amount is already safe to pay today, but none of the
+    #       user's configured payment_methods_user_will_consider produced an
+    #       eligible plan (e.g. full_payment isn't accepted, and partial/
+    #       installment options don't apply once the full amount is safe).
+    # These are financial-affordability vs payment-method-eligibility, and
+    # must not be described with the same "isn't affordable" wording.
+    safe_but_no_eligible_method = (
+        status == "not_affordable" and requested is not None and safe >= requested
+    )
 
     if status == "affordable_now":
         body = f"Pay {_fmt(safe, currency)} today."
@@ -41,7 +54,12 @@ def deterministic_explanation(decision: Decision, facts: dict) -> str:
             f"Waiting until {earliest} is safer than paying now"
             if earliest else "Waiting is safer than paying now"
         ) + f"; only {_fmt(safe, currency)} is safe to pay today."
-    else:  # not_affordable
+    elif safe_but_no_eligible_method:
+        body = (
+            f"{_fmt(safe, currency)} is financially safe to pay today, but no eligible "
+            f"payment method matches your current payment preferences."
+        )
+    else:  # genuinely not_affordable
         body = (
             f"This isn't affordable within the next 90 days without dropping below your "
             f"{_fmt(minimum, currency)} minimum balance" if minimum is not None else
@@ -94,7 +112,12 @@ def generate_explanation(decision: Decision, facts: dict, call_llm) -> str:
     system = (
         "Write a 1-2 sentence explanation of a financial decision that has "
         "ALREADY been made. Do not recalculate anything. Do not introduce "
-        "any number not present in the facts provided. Be specific and concrete."
+        "any number not present in the facts provided. Be specific and concrete. "
+        "If facts['safe_today'] is already greater than or equal to "
+        "facts['requested_amount'] but the decision was not 'affordable_now', "
+        "that means the amount is financially safe but no eligible payment "
+        "method matched the user's preferences — say that plainly, and do not "
+        "imply the balance is insufficient."
     )
     user = (
         f"decision: {decision.affordability_status} / {decision.recommended_payment_method}\n"
